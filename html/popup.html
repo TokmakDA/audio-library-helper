@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Audio Library Helper</title>
+    <link href="../html/bs5/bootstrap.min.css" rel="stylesheet">
+    <link href="../html/options.css" rel="stylesheet">
+    <link href="../html/popup.css" rel="stylesheet">
+</head>
+<body>
+<section class="page-shell popup-shell">
+    <article class="settings-card popup-card">
+        <header class="settings-hero popup-header">
+                <div class="popup-header-top">
+                    <h1 class="popup-app-title" id="popup-app-title"></h1> <span class="badge text-bg-dark">v <span id="popup-app-version"></span></span>
+                </div>
+                <p class="popup-app-description" id="popup-app-description"></p>
+        </header>
+
+        <main class="popup-body">
+            <div id="popup-content-root" class="popup-content"></div>
+        </main>
+
+        <footer class="popup-footer">
+            <button id="popup-open-settings-button" type="button" class="btn btn-outline-secondary w-100">Настройки</button>
+
+            <div class="popup-footer-meta" id="popup-token-meta" hidden>
+                <span><span id="popup-token-label"></span>: <span id="popup-token-end"></span></span>
+                <button id="popup-token-refresh-button" type="button" class="popup-token-link">Обновить</button>
+            </div>
+        </footer>
+    </article>
+</section>
+<script src="../js/config.js"></script>
+<script src="../js/popup.js" defer></script>
+</body>
+</html>

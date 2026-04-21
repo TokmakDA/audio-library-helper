@@ -1,0 +1,230 @@
+body {
+    min-height: auto;
+}
+
+.popup-shell {
+    width: 600px;
+    max-width: 600px;
+    padding: 14px;
+}
+
+.popup-card {
+    border-radius: 24px;
+}
+
+.popup-header {
+    display: flex;
+    justify-content: space-between;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
+}
+
+.popup-header-top {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    width: 100%;
+}
+.popup-app-title {
+    margin: 0;
+    padding: 0;
+    font-size: 1.45rem;
+    line-height: 1.1;
+}
+
+.popup-app-description {
+    margin: 0;
+    padding: 0;
+}
+
+.popup-body {
+    padding: 20px;
+}
+
+.popup-content {
+    min-height: 280px;
+}
+
+.popup-work {
+    display: grid;
+}
+
+.popup-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(calc(50% - 8px), 1fr));
+    gap: 16px;
+}
+
+.popup-grid--single {
+    grid-template-columns: 1fr;
+}
+
+.popup-column--full {
+    grid-column: 1 / -1;
+}
+
+.popup-section-title {
+    display: inline-block;
+    margin-bottom: 10px;
+    font-size: 0.92rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--app-muted);
+}
+
+.popup-panel {
+    border: 1px solid var(--app-border);
+    border-radius: 18px;
+    background: var(--app-surface-strong);
+    overflow: hidden;
+}
+
+.popup-image {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+}
+
+.popup-panel-body {
+    padding: 14px;
+}
+
+.popup-track-title,
+.popup-entity-title {
+    margin: 0 0 8px;
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+#popup-track-panel .popup-track-title {
+    color: var(--popup-track-text, var(--app-text));
+}
+
+.popup-meta,
+.popup-hint,
+.popup-footer-meta,
+.popup-panel pre {
+    color: var(--app-muted);
+}
+
+#popup-track-panel .popup-meta,
+#popup-track-panel .popup-hint {
+    color: var(--popup-track-muted, var(--app-muted));
+}
+
+#popup-track-panel #popup-track-download-button {
+    background: var(--popup-track-button-bg, var(--bs-btn-bg));
+    color: var(--popup-track-button-text, var(--bs-btn-color));
+    border-color: var(--popup-track-button-border, transparent);
+}
+
+#popup-track-panel #popup-track-download-button:hover,
+#popup-track-panel #popup-track-download-button:focus-visible {
+    filter: brightness(0.96);
+}
+
+.popup-panel pre {
+    margin: 0;
+    white-space: pre-wrap;
+    font-family: inherit;
+    font-size: 0.92rem;
+}
+
+.popup-actions {
+    margin-top: 12px;
+}
+
+.popup-footer {
+    display: grid;
+    gap: 12px;
+    margin-top: 18px;
+    padding: 12px 20px;
+    border-top: 1px solid var(--app-border);
+}
+
+.popup-footer-meta {
+    font-size: 0.9rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+}
+
+.popup-token-link {
+    color: var(--app-accent-strong);
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+
+.popup-token-link:hover {
+    text-decoration: underline;
+}
+
+.popup-entity-download-button {
+    width: 100%;
+}
+
+.popup-range {
+    margin-top: 14px;
+}
+
+.popup-range-meta {
+    font-size: 0.9rem;
+}
+
+.popup-range-label {
+    font-size: 0.7rem;
+}
+
+.popup-entity-extra {
+    margin-top: 12px;
+}
+
+.popup-related strong {
+    color: var(--app-text);
+}
+
+.popup-entity-extra .list-group-item {
+    border-color: var(--app-border);
+    background: transparent;
+    color: var(--app-text);
+}
+
+.popup-entity-extra .list-group-item:hover {
+    background: var(--app-code-bg);
+}
+
+.popup-auth {
+    text-align: center;
+    display: grid;
+    place-items: center;
+    align-content: center;
+    min-height: 100%;
+    padding: 28px 10px 8px;
+}
+
+.popup-auth p {
+    max-width: 360px;
+    margin: 10px auto 16px;
+    color: var(--app-muted);
+}
+
+.popup-state {
+    display: grid;
+    place-items: center;
+    min-height: 100%;
+    padding: 28px 16px;
+    border: 1px dashed var(--app-border);
+    border-radius: 18px;
+    background: var(--app-surface-strong);
+    text-align: center;
+}
+
+.popup-state-text {
+    max-width: 360px;
+    color: var(--app-muted);
+}

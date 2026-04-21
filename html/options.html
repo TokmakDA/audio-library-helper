@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Настройки</title>
+    <link href="../html/bs5/bootstrap.min.css" rel="stylesheet">
+    <link href="../html/options.css" rel="stylesheet">
+</head>
+<body>
+<main class="page-shell">
+    <div class="settings-card">
+        <div class="settings-hero">
+            <h1 id="settings-page-title"></h1>
+            <p id="settings-page-description" class="mb-0"></p>
+        </div>
+
+        <div class="settings-body">
+            <form class="form settings-grid" id="settings-form">
+                <div class="field-card">
+                    <label for="settings-theme-select" class="form-label">Тема интерфейса</label>
+                    <select class="form-select" id="settings-theme-select">
+                        <option value="auto">Как в системе</option>
+                        <option value="light">Светлая</option>
+                        <option value="dark">Тёмная</option>
+                    </select>
+                    <span class="field-hint">Применяется к окну настроек автоматически.</span>
+                </div>
+
+                <div class="field-card">
+                    <label for="settings-cover-resolution" class="form-label">Разрешение обложки</label>
+                    <select class="form-select" id="settings-cover-resolution">
+                        <option value="200">200x200</option>
+                        <option value="400">400x400</option>
+                        <option value="600">600x600</option>
+                        <option value="800">800x800</option>
+                        <option value="1000">1000x1000</option>
+                    </select>
+                </div>
+
+                <div class="field-card">
+                    <label for="settings-audio-quality" class="form-label">Качество звука</label>
+                    <select class="form-select" id="settings-audio-quality">
+                        <option value="lq">Низкое</option>
+                        <option value="nq">Среднее</option>
+                        <option value="lossless">Высокое</option>
+                    </select>
+                </div>
+
+                <div class="field-card">
+                    <label for="settings-download-count" class="form-label">Количество треков за раз</label>
+                    <select class="form-select" id="settings-download-count">
+                        <option value="2">2 трека</option>
+                        <option value="4">4 трека</option>
+                        <option value="6">6 треков</option>
+                        <option value="8">8 треков</option>
+                    </select>
+                    <span class="field-hint">Сколько файлов запускать в одном проходе.</span>
+                </div>
+
+                <div class="field-card">
+                    <label for="settings-download-folder" class="form-label">Папка для загрузки</label>
+                    <input required class="form-control" type="text" id="settings-download-folder"
+                           placeholder="Например: music/%dir%/%genre%/%year%/%artist%/%album%">
+                    <span class="field-hint">Можно использовать шаблонные переменные в пути.</span>
+                    <div id="settings-template-variables" class="variables-list"></div>
+                </div>
+
+                <div class="field-card">
+                    <div class="form-check form-switch mb-0">
+                        <input class="form-check-input" type="checkbox" id="settings-numbering-tracks">
+                        <label class="form-check-label" for="settings-numbering-tracks">Нумеровать имена треков</label>
+                    </div>
+                    <code id="settings-track-example" class="preview-code">music_name.mp3</code>
+                </div>
+
+                <div class="field-card">
+                    <label for="settings-save-history" class="form-label">Сохранять историю в менеджере загрузок</label>
+                    <select class="form-select" id="settings-save-history">
+                        <option value="1">Да</option>
+                        <option value="0">Нет</option>
+                    </select>
+                </div>
+
+                <div class="actions-row">
+                    <button class="btn btn-dark" type="submit">Сохранить</button>
+                    <span id="settings-save-status" class="save-status" aria-live="polite"></span>
+                </div>
+            </form>
+
+            <hr class="my-4">
+
+            <pre class="release-notes">#1.0.1
+- Восстановлена рабочая логика расширения на базе исходного проекта с сохранением текущей стилистики, тем и вынесенного конфига.
+- Скачивание и получение данных о треках снова переведены в service worker, чтобы убрать проблемы с CORS и нестабильным page context.
+- Popup переработан: `header / main / footer`, условный рендер состояний без template-зависимости, единый стиль именования id и селекторов.
+- Метаданные popup теперь берутся из manifest, а базовые тексты страницы настроек живут в общем конфиге.
+- Улучшена читаемость карточки текущего трека: контраст текста, кнопки и подсказок теперь подстраивается под цвет трека.
+
+#1.0.0
+- Первый публичный релиз Audio Library Helper.
+- Проект переименован и приведён к единому названию в манифестах, интерфейсе и документации.
+- Обновлена иконка расширения.
+- Интерфейс popup и страницы настроек приведён к актуальному виду.
+- Настройки загрузки и отображения собраны в единый конфиг.
+- Код очищен от лишних файлов и задокументирован через JSDoc-комментарии.
+- README дополнен кнопкой скачивания архива проекта.</pre>
+        </div>
+    </div>
+</main>
+<script src="../js/config.js"></script>
+<script src="../js/options.js" defer></script>
+</body>
+</html>
