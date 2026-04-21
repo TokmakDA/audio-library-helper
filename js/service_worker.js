@@ -2,7 +2,11 @@
  * Service worker координирует внедрение page-script, синхронизацию состояния
  * и скачивание треков с упаковкой метаданных.
  */
-importScripts('config.js', '../html/bs5/browser-id3-writer.6.0.0.mjs');
+if (typeof importScripts === 'function') {
+    importScripts('config.js', '../html/bs5/browser-id3-writer.6.0.0.mjs');
+}
+
+const extensionAction = chrome.action ?? chrome.browserAction ?? null;
 const logger = createDebugLogger('worker');
 
 logger.log('service_worker.js loaded');
@@ -174,8 +178,12 @@ const badgeManager = {
      * @returns {void}
      */
     updateBadge(count, bg) {
-        chrome.action.setBadgeText({text: count > 0 ? count.toString() : ""});
-        chrome.action.setBadgeBackgroundColor({color: bg});
+        if (!extensionAction) {
+            return;
+        }
+
+        extensionAction.setBadgeText({text: count > 0 ? count.toString() : ""});
+        extensionAction.setBadgeBackgroundColor({color: bg});
     }
 };
 
@@ -632,15 +640,22 @@ const worker = {
      */
     onMessage(message, sender, sendResponse) {
         if (message.action === "inject_parser") {
-            logger.log('inject_parser message received', {tabId: sender.tab.id});
-            sendResponse({success: true, message: 'parser.js OK', tabId: sender.tab.id});
+            const tabId = sender.tab?.id;
+
+            if (typeof tabId !== 'number') {
+                sendResponse({success: false, message: 'Active tab is missing for parser injection'});
+                return;
+            }
+
+            logger.log('inject_parser message received', {tabId});
+            sendResponse({success: true, message: 'parser.js OK', tabId});
             chrome.scripting.executeScript({
-                target: {tabId: sender.tab.id},
+                target: {tabId},
                 files: ["js/config.js", "html/bs5/browser-id3-writer.6.0.0.mjs", "js/parser.js"],
                 world: "MAIN"
             }).then(() => {
                 chrome.scripting.executeScript({
-                    target: {tabId: sender.tab.id},
+                    target: {tabId},
                     func: () => {
                         if (typeof appYa !== 'undefined' && typeof appYa.init === 'function') {
                             appYa.init();
@@ -648,12 +663,12 @@ const worker = {
                     },
                     world: "MAIN"
                 }).then(() => {
-                    appService.saveToStorage(APP_CONFIG.storageKeys.tabId, sender.tab.id);
-                    logger.log('parser injected and tab saved', {tabId: sender.tab.id});
+                    appService.saveToStorage(APP_CONFIG.storageKeys.tabId, tabId);
+                    logger.log('parser injected and tab saved', {tabId});
                 }).catch(console.error);
             }).catch(console.error);
 
-            return true;
+            return;
         }
 
         if (message.action === "send_localStorage") {
@@ -682,7 +697,7 @@ const worker = {
             }).then(() => {
 
             }).catch(console.error);
-            return true;
+            return;
         }
 
         if (message.action === "download_Tracks") {
@@ -691,7 +706,7 @@ const worker = {
             downloadManager.downloadTracks(message, this.globalCount).catch((error) => {
                 logger.error('downloadTracks top-level failed', error);
             });
-            return true;
+            return;
         }
 
         if (message.action === "resolve_track_info") {
@@ -700,7 +715,7 @@ const worker = {
             downloadManager.resolveCurrentTrack(message.trackId).catch((error) => {
                 logger.error('resolveCurrentTrack top-level failed', error);
             });
-            return true;
+            return;
         }
 
         if (message.action === "download_SFIFTD") {
@@ -723,7 +738,8 @@ const worker = {
             } else {
                 logger.warn('download_SFIFTD skipped because track id was not resolved');
             }
-            return true;
+            sendResponse({success: Boolean(resolvedTrackId), trackId: resolvedTrackId});
+            return;
         }
     }
 };

@@ -1,18 +1,32 @@
 {
   "manifest_version": 3,
   "name": "Audio Library Helper",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Инструмент для экспорта аудиотреков в личную библиотеку",
   "icons": {
+    "16": "icons/app-icon.png",
+    "32": "icons/app-icon.png",
+    "48": "icons/app-icon.png",
     "128": "icons/app-icon.png"
   },
   "action": {
-    "default_icon": "icons/app-icon.png",
+    "default_icon": {
+      "16": "icons/app-icon.png",
+      "32": "icons/app-icon.png",
+      "48": "icons/app-icon.png",
+      "128": "icons/app-icon.png"
+    },
     "default_popup": "html/popup.html",
     "default_title": "Audio Library Helper"
   },
   "background": {
-    "service_worker": "js/service_worker.js"
+    "scripts": [
+      "js/config.js",
+      "html/bs5/browser-id3-writer.6.0.0.mjs",
+      "js/service_worker.js"
+    ],
+    "service_worker": "js/service_worker.js",
+    "type": "classic"
   },
   "content_scripts": [
     {
@@ -49,8 +63,12 @@
     "https://*.yandex.net/*",
     "https://*.yandex.ru/*"
   ],
-  "incognito": "split",
   "options_page": "html/options.html",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "audio-library-helper@local"
+    }
+  },
   "web_accessible_resources": [
     {
       "resources": ["js/config.js"],

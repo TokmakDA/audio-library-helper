@@ -16,14 +16,13 @@
 
 1. Откройте `about:debugging#/runtime/this-firefox`.
 2. Нажмите `Загрузить временное дополнение...`.
-3. Выберите `manifest_Firefox.json`.
+3. Выберите `manifest.json`.
 
 Firefox загружает это расширение как временное дополнение до перезапуска браузера.
 
 ## Структура
 
-- `manifest.json` — Chromium-манифест
-- `manifest_Firefox.json` — Firefox-манифест
+- `manifest.json` — общий манифест для Chromium и Firefox
 - `js/` — логика расширения
 - `html/` — popup и страница настроек
 - `icons/` — иконки расширения
