@@ -15,9 +15,67 @@ const popupTokenLabel = document.getElementById('popup-token-label');
 const popupTokenEnd = document.getElementById('popup-token-end');
 const popupTokenRefreshButton = document.getElementById('popup-token-refresh-button');
 const popupOpenSettingsButton = document.getElementById('popup-open-settings-button');
+const popupStopDownloadsButton = document.getElementById('popup-stop-downloads-button');
+const popupDownloadStatus = document.getElementById('popup-download-status');
 const defaultCoverImage = chrome.runtime.getURL('icons/app-icon.png');
 
-let pendingTrackInfoRequestId = null;
+const pendingTrackInfoRequestIds = {
+    current: null,
+    next: null
+};
+
+const MUSIC_TAB_PATTERNS = [
+    'https://music.yandex.ru/*',
+    'https://music.yandex.com/*',
+    'https://music.yandex.kz/*',
+    'https://music.yandex.by/*',
+    'https://music.yandex.uz/*',
+    'https://next.music.yandex.ru/*',
+    'https://next.music.yandex.com/*',
+    'https://next.music.yandex.kz/*',
+    'https://next.music.yandex.by/*',
+    'https://next.music.yandex.uz/*'
+];
+
+const TRACK_SLOT_CONFIG = Object.freeze({
+    current: Object.freeze({
+        slot: 'current',
+        sectionTitle: uiText.popupCurrentTrack,
+        hint: uiText.popupShortcuts,
+        resolvingText: uiText.popupResolvingTrack,
+        emptyText: uiText.popupEmptyTrack,
+        trackIdKey: 'appYa_currentTrackId',
+        trackKey: 'appYa_currentTrack',
+        legacyTrackKey: 'appYa_cureitTrack'
+    }),
+    next: Object.freeze({
+        slot: 'next',
+        sectionTitle: uiText.popupNextTrack,
+        hint: uiText.popupNextTrackHint,
+        resolvingText: uiText.popupResolvingNextTrack,
+        emptyText: uiText.popupNextTrackEmpty,
+        trackIdKey: 'appYa_nextTrackId',
+        trackKey: 'appYa_nextTrack',
+        legacyTrackKey: null
+    })
+});
+
+const COMPACT_TRACK_SLOT_CONFIG = Object.freeze({
+    previous: Object.freeze({
+        slot: 'previous',
+        sectionTitle: uiText.popupPreviousTrack,
+        emptyText: '',
+        resolvingText: uiText.popupCompactTrackResolving,
+        trackKey: 'appYa_previousTrack'
+    }),
+    next: Object.freeze({
+        slot: 'next',
+        sectionTitle: uiText.popupNextTrack,
+        emptyText: uiText.popupNextTrackEmpty,
+        resolvingText: uiText.popupCompactTrackResolving,
+        trackKey: 'appYa_nextTrack'
+    })
+});
 
 const escapeFileName = (fileName) => fileName.replace(/[\\/:*?"<>|]/g, '_');
 
@@ -32,7 +90,9 @@ const missingShellElementIds = collectMissingElements([
     ['popup-token-meta', popupTokenMeta],
     ['popup-token-end', popupTokenEnd],
     ['popup-token-refresh-button', popupTokenRefreshButton],
-    ['popup-open-settings-button', popupOpenSettingsButton]
+    ['popup-open-settings-button', popupOpenSettingsButton],
+    ['popup-stop-downloads-button', popupStopDownloadsButton],
+    ['popup-download-status', popupDownloadStatus]
 ]);
 
 const hasPopupShell = missingShellElementIds.length === 0;
@@ -55,6 +115,10 @@ if (popupAppVersion) {
 
 if (popupOpenSettingsButton) {
     popupOpenSettingsButton.textContent = uiText.popupSettings;
+}
+
+if (popupStopDownloadsButton) {
+    popupStopDownloadsButton.textContent = uiText.popupStopDownloads;
 }
 
 if (popupTokenLabel) {
@@ -90,8 +154,93 @@ const storageService = {
     }
 };
 
+function createChromePromise(invoker) {
+    return new Promise((resolve, reject) => {
+        try {
+            invoker((result) => {
+                if (chrome.runtime.lastError) {
+                    reject(new Error(chrome.runtime.lastError.message));
+                    return;
+                }
+
+                resolve(result);
+            });
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
+const tabService = {
+    queryTabs(queryInfo) {
+        return createChromePromise((callback) => chrome.tabs.query(queryInfo, callback))
+            .catch((error) => {
+                logger.warn('tabs.query failed', error?.message || String(error));
+                return [];
+            });
+    },
+
+    getTab(tabId) {
+        if (typeof tabId !== 'number') {
+            return Promise.resolve(null);
+        }
+
+        return createChromePromise((callback) => chrome.tabs.get(tabId, callback))
+            .catch((error) => {
+                logger.warn('tabs.get failed', {tabId, message: error?.message || String(error)});
+                return null;
+            });
+    },
+
+    updateTab(tabId, updateProperties) {
+        return createChromePromise((callback) => chrome.tabs.update(tabId, updateProperties, callback));
+    },
+
+    createTab(createProperties) {
+        return createChromePromise((callback) => chrome.tabs.create(createProperties, callback));
+    },
+
+    isMusicUrl(url) {
+        return typeof url === 'string'
+            && /^https:\/\/(?:next\.)?music\.yandex\.(?:ru|com|kz|by|uz)\//.test(url);
+    },
+
+    async resolveMusicTabContext(storedTabId) {
+        const preferredTab = await this.getTab(storedTabId);
+        if (preferredTab && this.isMusicUrl(preferredTab.url || preferredTab.pendingUrl)) {
+            return {
+                tabId: preferredTab.id,
+                actionLabel: uiText.popupActivateMusic
+            };
+        }
+
+        const musicTabs = await this.queryTabs({url: MUSIC_TAB_PATTERNS});
+        const firstMusicTab = musicTabs.find((tab) => this.isMusicUrl(tab.url || tab.pendingUrl));
+
+        if (firstMusicTab) {
+            return {
+                tabId: firstMusicTab.id,
+                actionLabel: uiText.popupActivateMusic
+            };
+        }
+
+        return {
+            tabId: null,
+            actionLabel: uiText.popupOpenMusic
+        };
+    }
+};
+
 function resolveCoverUrl(coverUri, coverSize) {
     return coverUri ? `https://${coverUri.replace(/%%/g, coverSize)}` : defaultCoverImage;
+}
+
+function resolveTrackImage(track, coverSize) {
+    if (track?.coverUrl) {
+        return track.coverUrl;
+    }
+
+    return resolveCoverUrl(track?.coverUri, coverSize);
 }
 
 function parseColor(colorValue) {
@@ -156,28 +305,28 @@ function toAlphaColor(baseColor, alpha) {
     return `rgba(${parsedColor.r}, ${parsedColor.g}, ${parsedColor.b}, ${alpha})`;
 }
 
-function applyTrackPanelTheme(refs, derivedColors = {}) {
+function applyTrackPanelTheme(trackRefs, derivedColors = {}) {
     const backgroundColor = derivedColors.accent || '';
     const computedTextColor = parseColor(derivedColors.waveText)
         ? derivedColors.waveText
         : getContrastingTextColor(backgroundColor);
     const isLightBackground = getContrastingTextColor(backgroundColor) === '#101217';
 
-    refs.popupTrackPanel.style.backgroundColor = backgroundColor;
-    refs.popupTrackPanel.style.setProperty('--popup-track-text', computedTextColor);
-    refs.popupTrackPanel.style.setProperty(
+    trackRefs.panel.style.backgroundColor = backgroundColor;
+    trackRefs.panel.style.setProperty('--popup-track-text', computedTextColor);
+    trackRefs.panel.style.setProperty(
         '--popup-track-muted',
         toAlphaColor(computedTextColor, isLightBackground ? 0.76 : 0.84)
     );
-    refs.popupTrackPanel.style.setProperty(
+    trackRefs.panel.style.setProperty(
         '--popup-track-button-bg',
         isLightBackground ? 'rgba(16, 18, 23, 0.92)' : 'rgba(248, 246, 242, 0.9)'
     );
-    refs.popupTrackPanel.style.setProperty(
+    trackRefs.panel.style.setProperty(
         '--popup-track-button-text',
         isLightBackground ? '#f8f6f2' : '#101217'
     );
-    refs.popupTrackPanel.style.setProperty('--popup-track-button-border', 'transparent');
+    trackRefs.panel.style.setProperty('--popup-track-button-border', 'transparent');
 }
 
 function pickFirstTrackId(value) {
@@ -274,10 +423,71 @@ function extractTrackIdFromPlaysPayload(payload) {
     return null;
 }
 
+function getTrackSlotConfig(slot) {
+    return slot === 'next' ? TRACK_SLOT_CONFIG.next : TRACK_SLOT_CONFIG.current;
+}
+
 function resolveCurrentTrackId(parsedData) {
     return pickFirstTrackId(parsedData.appYa_currentTrackId)
-        || extractTrackIdFromFileInfoPayload(parsedData['appYa_get-file-info'])
         || extractTrackIdFromPlaysPayload(parsedData.appYa_plays);
+}
+
+function resolveNextTrackId(parsedData) {
+    const currentTrackId = resolveCurrentTrackId(parsedData);
+    const nextTrackId = pickFirstTrackId(parsedData.appYa_nextTrackId)
+        || extractTrackIdFromFileInfoPayload(parsedData['appYa_get-file-info']);
+
+    if (!nextTrackId || nextTrackId === currentTrackId) {
+        return null;
+    }
+
+    return nextTrackId;
+}
+
+function resolveTrackIdForSlot(parsedData, slot) {
+    return slot === 'next'
+        ? resolveNextTrackId(parsedData)
+        : resolveCurrentTrackId(parsedData);
+}
+
+function getCachedTrackData(parsedData, slot) {
+    const config = getTrackSlotConfig(slot);
+    return parsedData[config.trackKey]
+        || (config.legacyTrackKey ? parsedData[config.legacyTrackKey] : null)
+        || null;
+}
+
+function getTrackArtistsText(track) {
+    return Array.isArray(track?.artists)
+        ? track.artists.map((item) => item.name).filter(Boolean).join(', ')
+        : '';
+}
+
+function getTrackSecondaryText(track) {
+    const albumTitles = Array.isArray(track?.albums)
+        ? track.albums.map((item) => item?.title).filter(Boolean)
+        : [];
+
+    if (albumTitles.length > 0) {
+        return albumTitles.join(', ');
+    }
+
+    const years = Array.isArray(track?.albums)
+        ? track.albums.map((item) => item?.year).filter(Boolean)
+        : [];
+
+    return years.join(', ');
+}
+
+function getCompactTrackConfig(slot) {
+    return slot === 'previous'
+        ? COMPACT_TRACK_SLOT_CONFIG.previous
+        : COMPACT_TRACK_SLOT_CONFIG.next;
+}
+
+function getCompactTrackData(parsedData, slot) {
+    const config = getCompactTrackConfig(slot);
+    return parsedData[config.trackKey] || null;
 }
 
 function setPlaylistDownloadButton(button, label, counter = '') {
@@ -297,20 +507,28 @@ function setPlaylistDownloadButton(button, label, counter = '') {
 }
 
 const renderer = {
-    renderState(message) {
+    renderState(message, actionLabel = '') {
         popupContentRoot.innerHTML = `
             <section class="popup-state">
                 <p class="popup-state-text mb-0"></p>
+                <button type="button" class="btn btn-warning mt-3" id="popup-state-action-button" hidden></button>
             </section>
         `;
 
         const root = popupContentRoot.firstElementChild;
+        const actionButton = root.querySelector('#popup-state-action-button');
         root.querySelector('.popup-state-text').textContent = message;
+
+        if (actionLabel) {
+            actionButton.hidden = false;
+            actionButton.textContent = actionLabel;
+        }
+
         popupTokenMeta.hidden = true;
-        return {root};
+        return {root, actionButton};
     },
 
-    renderAuth(authorizeUrl, appYa_tabID) {
+    renderAuth(authorizeUrl, appYaTabId) {
         popupContentRoot.innerHTML = `
             <section class="popup-auth">
                 <h2 class="h4 mb-2 popup-auth-title"></h2>
@@ -331,7 +549,11 @@ const renderer = {
 
         window.setTimeout(() => {
             authorizeButton.onclick = () => {
-                chrome.tabs.remove(appYa_tabID, () => {
+                if (typeof appYaTabId !== 'number') {
+                    return;
+                }
+
+                chrome.tabs.remove(appYaTabId, () => {
                     if (chrome.runtime.lastError) {
                         logger.error('failed to close authorization tab', chrome.runtime.lastError);
                     } else {
@@ -345,22 +567,82 @@ const renderer = {
         return {root, authorizeButton};
     },
 
+    renderTrackPanelMarkup(slot) {
+        const config = getTrackSlotConfig(slot);
+
+        return `
+            <section class="popup-track-section" id="popup-track-section-${slot}">
+                <strong class="popup-section-title">${config.sectionTitle}</strong>
+                <div id="popup-track-panel-${slot}" class="popup-panel">
+                    <img id="popup-track-image-${slot}" src="${defaultCoverImage}" class="popup-image" alt="Track Image">
+                    <div class="popup-panel-body">
+                        <h5 id="popup-track-title-${slot}" class="popup-track-title text-center"></h5>
+                        <p id="popup-track-meta-${slot}" class="popup-meta text-center mb-0"></p>
+                        <div class="popup-actions d-grid gap-2">
+                            <button id="popup-track-download-button-${slot}" type="button" class="btn btn-dark btn-sm"></button>
+                            <small id="popup-track-shortcuts-${slot}" class="popup-hint text-center"></small>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        `;
+    },
+
+    renderCompactTrackMarkup(slot) {
+        const config = getCompactTrackConfig(slot);
+
+        return `
+            <section class="popup-compact-track-section" id="popup-compact-track-section-${slot}" hidden>
+                <strong class="popup-section-title">${config.sectionTitle}</strong>
+                <div class="popup-compact-track" id="popup-compact-track-${slot}">
+                    <img id="popup-compact-track-image-${slot}" src="${defaultCoverImage}" class="popup-compact-track-image" alt="Track Image">
+                    <div class="popup-compact-track-body">
+                        <div id="popup-compact-track-title-${slot}" class="popup-compact-track-title"></div>
+                        <div id="popup-compact-track-meta-${slot}" class="popup-compact-track-meta"></div>
+                    </div>
+                    <button id="popup-compact-track-download-button-${slot}" type="button" class="btn btn-dark btn-sm popup-compact-track-button"></button>
+                </div>
+            </section>
+        `;
+    },
+
+    collectTrackCardRefs(root, slot) {
+        return {
+            section: root.querySelector(`#popup-track-section-${slot}`),
+            panel: root.querySelector(`#popup-track-panel-${slot}`),
+            image: root.querySelector(`#popup-track-image-${slot}`),
+            title: root.querySelector(`#popup-track-title-${slot}`),
+            meta: root.querySelector(`#popup-track-meta-${slot}`),
+            downloadButton: root.querySelector(`#popup-track-download-button-${slot}`),
+            hint: root.querySelector(`#popup-track-shortcuts-${slot}`)
+        };
+    },
+
+    collectCompactTrackRefs(root, slot) {
+        return {
+            section: root.querySelector(`#popup-compact-track-section-${slot}`),
+            container: root.querySelector(`#popup-compact-track-${slot}`),
+            image: root.querySelector(`#popup-compact-track-image-${slot}`),
+            title: root.querySelector(`#popup-compact-track-title-${slot}`),
+            meta: root.querySelector(`#popup-compact-track-meta-${slot}`),
+            downloadButton: root.querySelector(`#popup-compact-track-download-button-${slot}`)
+        };
+    },
+
     renderWork() {
         popupContentRoot.innerHTML = `
             <div class="popup-work">
                 <div class="popup-grid" id="popup-grid">
                     <section class="popup-column" id="popup-track-column">
-                        <strong class="popup-section-title">${uiText.popupCurrentTrack}</strong>
-                        <div id="popup-track-panel" class="popup-panel">
-                            <img id="popup-track-image" src="${defaultCoverImage}" class="popup-image" alt="Track Image">
-                            <div class="popup-panel-body">
-                                <h5 id="popup-track-title" class="popup-track-title text-center"></h5>
-                                <p id="popup-track-meta" class="popup-meta text-center mb-0"></p>
-                                <div class="popup-actions d-grid gap-2">
-                                    <button id="popup-track-download-button" type="button" class="btn btn-dark btn-sm"></button>
-                                    <small id="popup-track-shortcuts" class="popup-hint text-center"></small>
+                        <div class="popup-track-stack">
+                            ${this.renderTrackPanelMarkup('current')}
+                            <section class="popup-compact-track-list">
+                                <strong class="popup-section-title">${uiText.popupAdjacentTracks}</strong>
+                                <div class="popup-compact-track-stack">
+                                    ${this.renderCompactTrackMarkup('previous')}
+                                    ${this.renderCompactTrackMarkup('next')}
                                 </div>
-                            </div>
+                            </section>
                         </div>
                     </section>
 
@@ -407,12 +689,14 @@ const renderer = {
             popupGrid: root.querySelector('#popup-grid'),
             popupTrackColumn: root.querySelector('#popup-track-column'),
             popupEntityColumn: root.querySelector('#popup-entity-column'),
-            popupTrackPanel: root.querySelector('#popup-track-panel'),
-            popupTrackImage: root.querySelector('#popup-track-image'),
-            popupTrackTitle: root.querySelector('#popup-track-title'),
-            popupTrackMeta: root.querySelector('#popup-track-meta'),
-            popupTrackDownloadButton: root.querySelector('#popup-track-download-button'),
-            popupTrackShortcuts: root.querySelector('#popup-track-shortcuts'),
+            popupCompactTrackList: root.querySelector('.popup-compact-track-list'),
+            trackCards: {
+                current: this.collectTrackCardRefs(root, 'current')
+            },
+            compactTrackCards: {
+                previous: this.collectCompactTrackRefs(root, 'previous'),
+                next: this.collectCompactTrackRefs(root, 'next')
+            },
             popupEntityTitle: root.querySelector('#popup-entity-title'),
             popupEntityImage: root.querySelector('#popup-entity-image'),
             popupEntityMeta: root.querySelector('#popup-entity-meta'),
@@ -426,10 +710,10 @@ const renderer = {
             rangeLabels: root.querySelectorAll('.popup-range-label')
         };
 
-        refs.popupTrackTitle.textContent = uiText.popupCurrentTrack;
-        refs.popupTrackMeta.textContent = uiText.popupEmptyTrack;
-        refs.popupTrackDownloadButton.textContent = uiText.parserButtonDefault;
-        refs.popupTrackShortcuts.textContent = uiText.popupShortcuts;
+        refs.trackCards.current.downloadButton.textContent = uiText.parserButtonDefault;
+        refs.trackCards.current.hint.textContent = uiText.popupShortcuts;
+        refs.compactTrackCards.previous.downloadButton.textContent = uiText.parserButtonDefault;
+        refs.compactTrackCards.next.downloadButton.textContent = uiText.parserButtonDefault;
         refs.popupRangeLabelText.textContent = uiText.popupTrackRangeLabel;
 
         if (refs.rangeLabels[0]) {
@@ -482,19 +766,61 @@ const uiUpdater = {
         logger.log('popup theme applied', {theme, resolvedTheme});
     },
 
-    resetTrackInfo(refs) {
-        refs.popupTrackPanel.style.backgroundColor = '';
-        refs.popupTrackPanel.style.removeProperty('--popup-track-text');
-        refs.popupTrackPanel.style.removeProperty('--popup-track-muted');
-        refs.popupTrackPanel.style.removeProperty('--popup-track-button-bg');
-        refs.popupTrackPanel.style.removeProperty('--popup-track-button-text');
-        refs.popupTrackPanel.style.removeProperty('--popup-track-button-border');
-        refs.popupTrackImage.src = defaultCoverImage;
-        refs.popupTrackTitle.textContent = uiText.popupCurrentTrack;
-        refs.popupTrackMeta.textContent = '';
-        refs.popupTrackDownloadButton.disabled = true;
-        refs.popupTrackDownloadButton.textContent = uiText.parserButtonDefault;
-        refs.popupTrackDownloadButton.onclick = null;
+    updateDownloadState(downloadState) {
+        if (!popupStopDownloadsButton || !popupDownloadStatus) {
+            return;
+        }
+
+        const normalizedState = downloadState || {};
+        const isActive = Boolean(normalizedState.isActive);
+        const stopRequested = Boolean(normalizedState.stopRequested);
+        const remainingCount = Number(normalizedState.remainingCount || 0);
+
+        popupStopDownloadsButton.textContent = stopRequested
+            ? uiText.popupStoppingDownloads
+            : uiText.popupStopDownloads;
+        popupStopDownloadsButton.disabled = !isActive || stopRequested;
+
+        if (!isActive) {
+            popupDownloadStatus.textContent = uiText.popupDownloadQueueIdle;
+            return;
+        }
+
+        const statusPrefix = stopRequested
+            ? uiText.popupDownloadQueueStopping
+            : uiText.popupDownloadQueueActive;
+        popupDownloadStatus.textContent = `${statusPrefix}: ${remainingCount}`;
+    },
+
+    resetTrackCard(trackRefs, slot) {
+        const config = getTrackSlotConfig(slot);
+
+        trackRefs.panel.style.backgroundColor = '';
+        trackRefs.panel.style.removeProperty('--popup-track-text');
+        trackRefs.panel.style.removeProperty('--popup-track-muted');
+        trackRefs.panel.style.removeProperty('--popup-track-button-bg');
+        trackRefs.panel.style.removeProperty('--popup-track-button-text');
+        trackRefs.panel.style.removeProperty('--popup-track-button-border');
+        trackRefs.image.src = defaultCoverImage;
+        trackRefs.title.textContent = config.emptyText;
+        trackRefs.meta.textContent = '';
+        trackRefs.downloadButton.disabled = true;
+        trackRefs.downloadButton.textContent = uiText.parserButtonDefault;
+        trackRefs.downloadButton.onclick = null;
+        trackRefs.hint.textContent = config.hint;
+        trackRefs.section.hidden = false;
+    },
+
+    resetCompactTrackCard(trackRefs, slot) {
+        const config = getCompactTrackConfig(slot);
+
+        trackRefs.section.hidden = true;
+        trackRefs.image.src = defaultCoverImage;
+        trackRefs.title.textContent = config.emptyText;
+        trackRefs.meta.textContent = '';
+        trackRefs.downloadButton.disabled = true;
+        trackRefs.downloadButton.textContent = uiText.parserButtonDefault;
+        trackRefs.downloadButton.onclick = null;
     },
 
     resetPlaylistInfo(refs) {
@@ -513,14 +839,20 @@ const uiUpdater = {
         setPlaylistDownloadButton(refs.popupEntityDownloadButton, '...', '');
     },
 
-    updateTokenInfo(tokenData, appYa_tabID) {
+    updateTokenInfo(tokenData, appYaTabId) {
         popupTokenMeta.hidden = false;
         popupTokenEnd.textContent = this.getTokenExpirationDate(tokenData);
         popupTokenRefreshButton.onclick = async function (event) {
             event.preventDefault();
             await chrome.storage.local.remove(APP_CONFIG.storageKeys.database);
+
+            if (typeof appYaTabId !== 'number') {
+                window.close();
+                return;
+            }
+
             chrome.scripting.executeScript({
-                target: {tabId: appYa_tabID},
+                target: {tabId: appYaTabId},
                 func: () => {
                     const keysToRemove = [];
 
@@ -534,86 +866,168 @@ const uiUpdater = {
                     keysToRemove.forEach((key) => localStorage.removeItem(key));
                     window.location.reload();
                 },
-                world: "MAIN",
+                world: 'MAIN',
             }, () => {
                 window.close();
             });
         };
     },
 
-    updateUI(data, appYa_tabID, app) {
+    updateTrackCard(parsedData, appYaTabId, coverSize, trackRefs, slot) {
+        this.resetTrackCard(trackRefs, slot);
+
+        const config = getTrackSlotConfig(slot);
+        const expectedTrackId = resolveTrackIdForSlot(parsedData, slot);
+
+        if (!expectedTrackId) {
+            trackRefs.meta.textContent = uiText.popupEmptyState;
+            return false;
+        }
+
+        const cachedTrackData = getCachedTrackData(parsedData, slot);
+        const cachedTrackId = pickFirstTrackId(cachedTrackData?.trackinfo?.id);
+        const hasFreshTrackInfo = Boolean(
+            cachedTrackData
+            && cachedTrackId
+            && cachedTrackId === expectedTrackId
+        );
+
+        if (!hasFreshTrackInfo) {
+            trackRefs.title.textContent = config.resolvingText;
+            trackRefs.meta.textContent = '';
+            if (slot !== 'current') {
+                eventHandlers.resolveTrackInfo(expectedTrackId, slot);
+                logger.log('popup requested track info', {slot, trackId: expectedTrackId});
+            }
+            return false;
+        }
+
+        pendingTrackInfoRequestIds[slot] = null;
+
+        const track = cachedTrackData.trackinfo;
+        const imageURL = resolveTrackImage(track, coverSize);
+        const artists = getTrackArtistsText(track);
+        const secondaryText = getTrackSecondaryText(track);
+
+        trackRefs.title.innerText = track.title;
+        trackRefs.meta.innerHTML = secondaryText
+            ? `${artists}<br>${secondaryText}`
+            : artists;
+        trackRefs.image.src = imageURL;
+        applyTrackPanelTheme(trackRefs, track.derivedColors);
+        trackRefs.downloadButton.disabled = false;
+        trackRefs.downloadButton.onclick = () => {
+            eventHandlers.downloadTracks(appYaTabId, [track.id], 'music');
+        };
+
+        logger.log('rendering track card', {
+            slot,
+            trackId: track.id,
+            title: track.title,
+            artists
+        });
+
+        return true;
+    },
+
+    updateCompactTrackCard(parsedData, appYaTabId, coverSize, trackRefs, slot) {
+        this.resetCompactTrackCard(trackRefs, slot);
+
+        const compactConfig = getCompactTrackConfig(slot);
+        const expectedTrackId = slot === 'next'
+            ? resolveNextTrackId(parsedData)
+            : pickFirstTrackId(parsedData.appYa_previousTrack?.trackinfo?.id);
+
+        if (!expectedTrackId && slot === 'next') {
+            return false;
+        }
+
+        const cachedTrackData = getCompactTrackData(parsedData, slot);
+        const cachedTrackId = pickFirstTrackId(cachedTrackData?.trackinfo?.id);
+        const hasFreshTrackInfo = Boolean(
+            cachedTrackData
+            && cachedTrackId
+            && (!expectedTrackId || cachedTrackId === expectedTrackId)
+        );
+
+        if (!hasFreshTrackInfo) {
+            if (slot === 'next' && expectedTrackId) {
+                trackRefs.section.hidden = false;
+                trackRefs.title.textContent = compactConfig.resolvingText;
+                trackRefs.meta.textContent = '';
+                eventHandlers.resolveTrackInfo(expectedTrackId, 'next');
+                logger.log('popup requested compact next track info', {trackId: expectedTrackId});
+                return true;
+            }
+
+            return false;
+        }
+
+        if (slot === 'next') {
+            pendingTrackInfoRequestIds.next = null;
+        }
+
+        const track = cachedTrackData.trackinfo;
+        const artists = getTrackArtistsText(track);
+
+        trackRefs.section.hidden = false;
+        trackRefs.image.src = resolveTrackImage(track, coverSize);
+        trackRefs.title.textContent = track.title || compactConfig.sectionTitle;
+        trackRefs.meta.textContent = artists || getTrackSecondaryText(track);
+        trackRefs.downloadButton.disabled = !track.id;
+        trackRefs.downloadButton.onclick = track.id
+            ? () => eventHandlers.downloadTracks(appYaTabId, [track.id], 'music')
+            : null;
+
+        return true;
+    },
+
+    updateUI(data, appYaTabId, app, musicTabContext) {
         const parsedData = parser.parseStorage(data);
         const settings = normalizeSettings(app?.[APP_CONFIG.storageKeys.settings]);
         const coverQuality = settings.coverQuality ?? APP_CONFIG.defaults.coverQuality;
         const coverSize = `${coverQuality}x${coverQuality}`;
+        const effectiveTabId = musicTabContext?.tabId ?? appYaTabId;
 
         this.applyTheme(settings.theme);
+        this.updateDownloadState(app?.[APP_CONFIG.storageKeys.downloadState]);
+
         logger.log('updateUI called', {
-            tabId: appYa_tabID,
+            tabId: effectiveTabId,
             coverSize,
             hasToken: Boolean(parsedData.appYa_token),
             hasPage: Boolean(parsedData.appYa_page)
         });
 
-        if (!parsedData.appYa_token) {
-            renderer.renderAuth(parsedData.appYa_authorizationUrl, appYa_tabID);
+        if (typeof effectiveTabId !== 'number') {
+            const stateView = renderer.renderState(
+                uiText.popupMusicTabState,
+                musicTabContext?.actionLabel || uiText.popupOpenMusic
+            );
+            stateView.actionButton.onclick = () => eventHandlers.openOrActivateMusicTab(appYaTabId);
             return;
         }
 
-        this.updateTokenInfo(parsedData.appYa_token, appYa_tabID);
-        const refs = renderer.renderWork();
-        this.updateTrackInfo(parsedData, appYa_tabID, coverSize, refs);
-        this.updatePlaylistInfo(parsedData, appYa_tabID, coverSize, refs);
-    },
-
-    updateTrackInfo(parsedData, appYa_tabID, coverSize, refs) {
-        this.resetTrackInfo(refs);
-
-        const expectedTrackId = resolveCurrentTrackId(parsedData);
-        const cachedTrackId = pickFirstTrackId(parsedData.appYa_cureitTrack?.trackinfo?.id);
-        const hasFreshTrackInfo = Boolean(
-            parsedData.appYa_cureitTrack
-            && (!expectedTrackId || !cachedTrackId || expectedTrackId === cachedTrackId)
-        );
-
-        if (!hasFreshTrackInfo) {
-            if (expectedTrackId) {
-                refs.popupTrackTitle.textContent = uiText.popupResolvingTrack;
-                refs.popupTrackMeta.textContent = '';
-                eventHandlers.resolveTrackInfo(expectedTrackId);
-                logger.log('popup requested current track info', {trackId: expectedTrackId});
+        if (!parsedData.appYa_token) {
+            if (parsedData.appYa_authorizationUrl) {
+                renderer.renderAuth(parsedData.appYa_authorizationUrl, effectiveTabId);
             } else {
-                refs.popupTrackTitle.textContent = uiText.popupEmptyTrack;
-                refs.popupTrackMeta.textContent = uiText.popupEmptyState;
-                logger.warn('track info is missing for popup');
+                const stateView = renderer.renderState(uiText.popupMusicTabState, uiText.popupActivateMusic);
+                stateView.actionButton.onclick = () => eventHandlers.openOrActivateMusicTab(effectiveTabId);
             }
             return;
         }
 
-        pendingTrackInfoRequestId = null;
-
-        const track = parsedData.appYa_cureitTrack.trackinfo;
-        const imageURL = resolveCoverUrl(track.coverUri, coverSize);
-        const artists = track.artists.map((item) => item.name).join(', ');
-        const albums = track.albums.map((item) => item.year).join(', ');
-
-        refs.popupTrackTitle.innerText = track.title;
-        refs.popupTrackMeta.innerHTML = `${artists}<br>${albums}`;
-        refs.popupTrackImage.src = imageURL;
-        applyTrackPanelTheme(refs, track.derivedColors);
-        refs.popupTrackDownloadButton.disabled = false;
-        refs.popupTrackDownloadButton.onclick = () => {
-            eventHandlers.downloadTracks(appYa_tabID, [track.id], 'music');
-        };
-
-        logger.log('rendering current track', {
-            trackId: track.id,
-            title: track.title,
-            artists
-        });
+        this.updateTokenInfo(parsedData.appYa_token, effectiveTabId);
+        const refs = renderer.renderWork();
+        this.updateTrackCard(parsedData, effectiveTabId, coverSize, refs.trackCards.current, 'current');
+        const hasPreviousTrack = this.updateCompactTrackCard(parsedData, effectiveTabId, coverSize, refs.compactTrackCards.previous, 'previous');
+        const hasNextTrack = this.updateCompactTrackCard(parsedData, effectiveTabId, coverSize, refs.compactTrackCards.next, 'next');
+        refs.popupCompactTrackList.hidden = !hasPreviousTrack && !hasNextTrack;
+        this.updatePlaylistInfo(parsedData, effectiveTabId, coverSize, refs);
     },
 
-    updatePlaylistInfo(parsedData, appYa_tabID, coverSize, refs) {
+    updatePlaylistInfo(parsedData, appYaTabId, coverSize, refs) {
         this.resetPlaylistInfo(refs);
 
         const pageData = parsedData.appYa_page || {};
@@ -666,7 +1080,7 @@ const uiUpdater = {
                     ? trackIds
                     : trackIds.slice(startIdx, endIdx);
 
-                eventHandlers.downloadTracks(appYa_tabID, idsToDownload, `playlist/${title}`);
+                eventHandlers.downloadTracks(appYaTabId, idsToDownload, `playlist/${title}`);
             };
 
             return;
@@ -696,7 +1110,7 @@ const uiUpdater = {
             refs.popupEntityDownloadButton.hidden = false;
             setPlaylistDownloadButton(refs.popupEntityDownloadButton, uiText.popupDownloadArtist, `${trackIds.length}`);
             refs.popupEntityDownloadButton.onclick = () => {
-                eventHandlers.downloadTracks(appYa_tabID, trackIds, `artist/${escapeFileName(title)}`);
+                eventHandlers.downloadTracks(appYaTabId, trackIds, `artist/${escapeFileName(title)}`);
             };
 
             const albums = artist.albums ?? [];
@@ -712,7 +1126,7 @@ const uiUpdater = {
                     }
 
                     event.preventDefault();
-                    eventHandlers.changeTabUrl(appYa_tabID, link.getAttribute('data-url-tab'));
+                    eventHandlers.changeTabUrl(appYaTabId, link.getAttribute('data-url-tab'));
                 };
             }
 
@@ -731,7 +1145,7 @@ const uiUpdater = {
             refs.popupEntityDownloadButton.hidden = false;
             setPlaylistDownloadButton(refs.popupEntityDownloadButton, uiText.popupDownloadAlbum, `${trackIds.length}`);
             refs.popupEntityDownloadButton.onclick = () => {
-                eventHandlers.downloadTracks(appYa_tabID, trackIds, `album/${escapeFileName(title)}`);
+                eventHandlers.downloadTracks(appYaTabId, trackIds, `album/${escapeFileName(title)}`);
             };
 
             return;
@@ -745,7 +1159,7 @@ const uiUpdater = {
             refs.popupEntityDownloadButton.hidden = false;
             setPlaylistDownloadButton(refs.popupEntityDownloadButton, uiText.popupDownloadChart, `${trackIds.length}`);
             refs.popupEntityDownloadButton.onclick = () => {
-                eventHandlers.downloadTracks(appYa_tabID, trackIds, 'chart');
+                eventHandlers.downloadTracks(appYaTabId, trackIds, 'chart');
             };
 
             return;
@@ -771,20 +1185,27 @@ const uiUpdater = {
 const eventHandlers = {
     init() {
         document.addEventListener('DOMContentLoaded', this.onDOMContentLoaded);
+        popupStopDownloadsButton?.addEventListener('click', this.stopDownloads);
     },
 
     onDOMContentLoaded() {
-        storageService.getStorageData((result) => {
+        storageService.getStorageData(async (result) => {
             const settings = normalizeSettings(result[APP_CONFIG.storageKeys.settings]);
             uiUpdater.applyTheme(settings.theme);
+            uiUpdater.updateDownloadState(result[APP_CONFIG.storageKeys.downloadState]);
 
             storageService.monitorStorageChanges((changes) => {
                 const databaseChange = changes[APP_CONFIG.storageKeys.database];
                 const settingsChange = changes[APP_CONFIG.storageKeys.settings];
+                const downloadStateChange = changes[APP_CONFIG.storageKeys.downloadState];
 
                 if (settingsChange) {
                     window.location.reload();
                     return;
+                }
+
+                if (downloadStateChange) {
+                    uiUpdater.updateDownloadState(downloadStateChange.newValue);
                 }
 
                 if (!databaseChange) {
@@ -793,9 +1214,13 @@ const eventHandlers = {
 
                 const {newValue, oldValue} = databaseChange;
                 if (
-                    newValue?.appYa_cureitTrack !== oldValue?.appYa_cureitTrack
-                    || newValue?.appYa_page !== oldValue?.appYa_page
+                    newValue?.appYa_currentTrack !== oldValue?.appYa_currentTrack
+                    || newValue?.appYa_cureitTrack !== oldValue?.appYa_cureitTrack
                     || newValue?.appYa_currentTrackId !== oldValue?.appYa_currentTrackId
+                    || newValue?.appYa_previousTrack !== oldValue?.appYa_previousTrack
+                    || newValue?.appYa_nextTrack !== oldValue?.appYa_nextTrack
+                    || newValue?.appYa_nextTrackId !== oldValue?.appYa_nextTrackId
+                    || newValue?.appYa_page !== oldValue?.appYa_page
                     || newValue?.appYa_token !== oldValue?.appYa_token
                 ) {
                     logger.log('storage changed, reloading popup');
@@ -803,14 +1228,27 @@ const eventHandlers = {
                 }
             });
 
+            const musicTabContext = await tabService.resolveMusicTabContext(result[APP_CONFIG.storageKeys.tabId]);
+            if (
+                typeof musicTabContext.tabId === 'number'
+                && musicTabContext.tabId !== result[APP_CONFIG.storageKeys.tabId]
+            ) {
+                chrome.storage.local.set({[APP_CONFIG.storageKeys.tabId]: musicTabContext.tabId});
+            }
+
             if (result[APP_CONFIG.storageKeys.database]) {
                 uiUpdater.updateUI(
                     result[APP_CONFIG.storageKeys.database],
                     result[APP_CONFIG.storageKeys.tabId],
-                    result
+                    result,
+                    musicTabContext
                 );
             } else {
-                renderer.renderState(uiText.popupEmptyState);
+                const stateView = renderer.renderState(
+                    uiText.popupMusicTabState,
+                    musicTabContext.actionLabel
+                );
+                stateView.actionButton.onclick = () => eventHandlers.openOrActivateMusicTab(result[APP_CONFIG.storageKeys.tabId]);
                 logger.warn('appYa_db not found in storage');
             }
         });
@@ -835,22 +1273,49 @@ const eventHandlers = {
         });
     },
 
-    resolveTrackInfo(trackId) {
+    resolveTrackInfo(trackId, slot = 'current') {
         const normalizedTrackId = pickFirstTrackId(trackId);
-        if (!normalizedTrackId || pendingTrackInfoRequestId === normalizedTrackId) {
+        if (!normalizedTrackId || pendingTrackInfoRequestIds[slot] === normalizedTrackId) {
             return;
         }
 
-        pendingTrackInfoRequestId = normalizedTrackId;
+        pendingTrackInfoRequestIds[slot] = normalizedTrackId;
         chrome.runtime.sendMessage({
             action: 'resolve_track_info',
-            trackId: normalizedTrackId
+            trackId: normalizedTrackId,
+            slot
         }, (response) => {
             if (chrome.runtime.lastError) {
-                pendingTrackInfoRequestId = null;
+                pendingTrackInfoRequestIds[slot] = null;
                 logger.error('resolve_track_info request failed', chrome.runtime.lastError.message);
             } else {
-                logger.log('resolve_track_info request accepted', response);
+                logger.log('resolve_track_info request accepted', {slot, response});
+            }
+        });
+    },
+
+    async openOrActivateMusicTab(storedTabId) {
+        try {
+            const musicTabContext = await tabService.resolveMusicTabContext(storedTabId);
+            window.close();
+
+            if (typeof musicTabContext.tabId === 'number') {
+                await tabService.updateTab(musicTabContext.tabId, {active: true});
+                return;
+            }
+
+            await tabService.createTab({url: APP_CONFIG.yandex.locationOrigin});
+        } catch (error) {
+            logger.error('failed to open or activate music tab', error);
+        }
+    },
+
+    stopDownloads() {
+        chrome.runtime.sendMessage({action: 'stop_downloads'}, (response) => {
+            if (chrome.runtime.lastError) {
+                logger.error('stop_downloads request failed', chrome.runtime.lastError.message);
+            } else {
+                logger.log('stop_downloads request accepted', response);
             }
         });
     },
@@ -861,6 +1326,14 @@ const eventHandlers = {
         }
 
         window.close();
+
+        if (typeof tabId !== 'number') {
+            tabService.createTab({url}).catch((error) => {
+                logger.error('failed to create music tab', error);
+            });
+            return;
+        }
+
         chrome.tabs.update(tabId, {url}, () => {
             if (chrome.runtime.lastError) {
                 logger.error('failed to change tab url', chrome.runtime.lastError);

@@ -128,18 +128,9 @@ window.addEventListener('message', (event) => {
         });
     }
 
-    if (data.type === 'RESOLVE_TRACK_INFO' && data.payload?.trackId) {
-        logger.log('window message RESOLVE_TRACK_INFO received', data.payload);
-        chrome.runtime.sendMessage({
-            action: "resolve_track_info",
-            trackId: data.payload.trackId
-        }, (response) => {
-            if (chrome.runtime.lastError) {
-                logger.error('RESOLVE_TRACK_INFO runtime message failed', chrome.runtime.lastError.message);
-            } else {
-                logger.log('RESOLVE_TRACK_INFO runtime message accepted', response);
-            }
-        });
+    if (data.type === 'SYNC_LOCAL_STATE') {
+        logger.log('window message SYNC_LOCAL_STATE received', data.payload);
+        checkLocalStorageUpdates();
     }
 }, true);
 

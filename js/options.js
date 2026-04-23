@@ -15,12 +15,15 @@ document.addEventListener('DOMContentLoaded', async function () {
     const themeSelect = document.getElementById('settings-theme-select');
     const saveStatus = document.getElementById('settings-save-status');
     const templateVariables = document.getElementById('settings-template-variables');
+    const changelogTitle = document.getElementById('settings-changelog-title');
+    const changelogRoot = document.getElementById('settings-changelog');
     const settingsKey = APP_CONFIG.storageKeys.settings;
     const themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
 
     document.title = `${APP_CONFIG.appTitle} - ${APP_CONFIG.uiText.optionsTitle}`;
     pageTitle.textContent = APP_CONFIG.uiText.optionsTitle;
     pageDescription.textContent = APP_CONFIG.uiText.optionsSubtitle;
+    changelogTitle.textContent = APP_CONFIG.uiText.optionsChangelogTitle;
 
     /**
      * Показывает пример имени файла с учётом нумерации треков.
@@ -52,7 +55,72 @@ document.addEventListener('DOMContentLoaded', async function () {
             .join('');
     };
 
+    /**
+     * Рисует историю изменений из внешнего JSON-файла.
+     * @param {Array<{version:string,title?:string,summary?:string,changes?:string[]}>} releases Список релизов.
+     * @returns {void}
+     */
+    const renderChangelog = (releases) => {
+        changelogRoot.replaceChildren();
+
+        if (!Array.isArray(releases) || releases.length === 0) {
+            const emptyNode = document.createElement('div');
+            emptyNode.className = 'release-notes-empty';
+            emptyNode.textContent = 'Список изменений пока пуст.';
+            changelogRoot.appendChild(emptyNode);
+            return;
+        }
+
+        releases.forEach((release) => {
+            const card = document.createElement('article');
+            const title = document.createElement('h3');
+            const summary = document.createElement('p');
+            const list = document.createElement('ul');
+
+            card.className = 'release-note-card';
+            title.textContent = release.title || release.version || 'Без версии';
+            card.appendChild(title);
+
+            if (release.summary) {
+                summary.textContent = release.summary;
+                card.appendChild(summary);
+            }
+
+            (release.changes || []).forEach((item) => {
+                const listItem = document.createElement('li');
+                listItem.textContent = item;
+                list.appendChild(listItem);
+            });
+
+            if (list.children.length > 0) {
+                card.appendChild(list);
+            }
+
+            changelogRoot.appendChild(card);
+        });
+    };
+
+    /**
+     * Загружает changelog из расширения.
+     * @returns {Promise<void>}
+     */
+    const loadChangelog = async () => {
+        try {
+            const response = await fetch(chrome.runtime.getURL('data/changelog.json'));
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const releases = await response.json();
+            renderChangelog(releases);
+        } catch (error) {
+            console.error('Не удалось загрузить changelog:', error);
+            renderChangelog([]);
+        }
+    };
+
     renderTemplateVariables();
+    await loadChangelog();
 
     const data = await chrome.storage.local.get(settingsKey);
     const settings = normalizeSettings(data[settingsKey]);
