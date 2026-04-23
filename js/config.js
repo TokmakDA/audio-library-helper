@@ -35,7 +35,8 @@ const APP_CONFIG = Object.freeze({
     storageKeys: Object.freeze({
         settings: 'app_setting',
         database: 'appYa_db',
-        tabId: 'appYa_tabID'
+        tabId: 'appYa_tabID',
+        downloadState: 'app_download_state'
     }),
     settingsLocalStoragePrefix: 'appYa_setting_',
     defaults: Object.freeze({
@@ -64,12 +65,27 @@ const APP_CONFIG = Object.freeze({
         parserButtonDownloading: 'Скачивание...',
         popupEmptyTrack: 'Включите трек на странице сервиса и вернитесь сюда.',
         popupResolvingTrack: 'Получаем данные текущего трека...',
+        popupResolvingNextTrack: 'Получаем данные следующего трека...',
         popupEmptyState: 'Обновите страницу музыкального сервиса и откройте окно ещё раз.',
         popupAuthTitle: 'Требуется авторизация',
         popupAuthDescription: 'Для доступа к данным сервиса нужно один раз подтвердить авторизацию.',
         popupCurrentTrack: 'Текущий трек',
+        popupPreviousTrack: 'Предыдущий трек',
+        popupNextTrack: 'Следующий трек',
+        popupNextTrackEmpty: 'Следующий трек появится здесь, когда Яндекс Музыка подготовит его.',
+        popupNextTrackHint: 'Предзагруженный трек, который сервис уже готовит к проигрыванию.',
+        popupAdjacentTracks: 'Соседние треки',
+        popupCompactTrackResolving: 'Обновляем данные...',
         popupShortcuts: 'SHIFT+D или двойной клик',
         popupSettings: 'Настройки',
+        popupOpenMusic: 'Открыть Яндекс Музыку',
+        popupActivateMusic: 'Перейти к Яндекс Музыке',
+        popupMusicTabState: 'Откройте Яндекс Музыку или обновите уже открытую вкладку сервиса, затем снова откройте popup.',
+        popupStopDownloads: 'Экстренная остановка',
+        popupStoppingDownloads: 'Останавливаем загрузку...',
+        popupDownloadQueueIdle: 'Активных загрузок нет.',
+        popupDownloadQueueActive: 'Осталось в очереди',
+        popupDownloadQueueStopping: 'Очередь останавливается.',
         popupAuthorize: 'Авторизация',
         popupTokenLabel: 'Токен до',
         popupTokenRefresh: 'Обновить',
@@ -88,7 +104,8 @@ const APP_CONFIG = Object.freeze({
         popupPlaylistMetaAuthor: 'Автор',
         popupPlaylistMetaCount: 'Кол-во',
         popupRangeAll: 'Все',
-        popupRangeCount: 'шт'
+        popupRangeCount: 'шт',
+        optionsChangelogTitle: 'Список изменений'
     }),
     yandex: Object.freeze({
         locationOrigin: 'https://music.yandex.ru/?yamusic=ok',

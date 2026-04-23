@@ -23,7 +23,12 @@
         </main>
 
         <footer class="popup-footer">
-            <button id="popup-open-settings-button" type="button" class="btn btn-outline-secondary w-100">Настройки</button>
+            <div class="popup-footer-actions">
+                <button id="popup-stop-downloads-button" type="button" class="btn btn-outline-danger w-100">Остановить загрузку</button>
+                <button id="popup-open-settings-button" type="button" class="btn btn-outline-secondary w-100">Настройки</button>
+            </div>
+
+            <div class="popup-footer-status" id="popup-download-status" aria-live="polite"></div>
 
             <div class="popup-footer-meta" id="popup-token-meta" hidden>
                 <span><span id="popup-token-label"></span>: <span id="popup-token-end"></span></span>

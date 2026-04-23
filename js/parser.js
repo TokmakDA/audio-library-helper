@@ -89,6 +89,7 @@ if (typeof APP_CONFIG === 'undefined') {
 
             // Начинаем мониторинг fetch-запросов
             appYa.monitorFetchRequests();
+            appYa.startPlayerStateMonitor();
         },
 
         notifyExtension: function (type, payload) {
@@ -97,6 +98,105 @@ if (typeof APP_CONFIG === 'undefined') {
                 type,
                 payload
             }, window.location.origin);
+        },
+
+        parseStoredJson(value) {
+            if (!value) {
+                return null;
+            }
+
+            try {
+                return JSON.parse(value);
+            } catch (error) {
+                return null;
+            }
+        },
+
+        notifyLocalStateChanged() {
+            this.notifyExtension('SYNC_LOCAL_STATE', {
+                timestamp: Date.now()
+            });
+        },
+
+        writeLocalStorageJson(key, value) {
+            const serializedValue = JSON.stringify(value);
+
+            if (localStorage.getItem(key) !== serializedValue) {
+                localStorage.setItem(key, serializedValue);
+                this.notifyLocalStateChanged();
+            }
+        },
+
+        removeLocalStorageKey(key) {
+            if (localStorage.getItem(key) !== null) {
+                localStorage.removeItem(key);
+                this.notifyLocalStateChanged();
+            }
+        },
+
+        readMediaSessionTrackPreview(trackId) {
+            const normalizedTrackId = trackId ? String(trackId).trim() : '';
+            const metadata = navigator.mediaSession?.metadata;
+
+            if (!normalizedTrackId || !metadata?.title) {
+                return null;
+            }
+
+            const artistNames = String(metadata.artist || '')
+                .split(',')
+                .map((item) => item.trim())
+                .filter(Boolean);
+            const albumTitle = String(metadata.album || '').trim();
+            const artworks = Array.isArray(metadata.artwork) ? metadata.artwork : [];
+            const selectedArtwork = artworks.at(-1) || artworks[0] || null;
+
+            return {
+                trackinfo: {
+                    id: normalizedTrackId,
+                    title: String(metadata.title || '').trim(),
+                    artists: artistNames.map((name) => ({name})),
+                    albums: albumTitle ? [{title: albumTitle}] : [],
+                    coverUrl: selectedArtwork?.src || ''
+                }
+            };
+        },
+
+        syncCurrentTrackPreview() {
+            const currentTrackId = localStorage.getItem('appYa_currentTrackId');
+            const previewData = this.readMediaSessionTrackPreview(currentTrackId);
+
+            if (!previewData) {
+                return;
+            }
+
+            const previousTrack = this.parseStoredJson(localStorage.getItem('appYa_previousTrack'));
+            const previousTrackId = previousTrack?.trackinfo?.id ? String(previousTrack.trackinfo.id) : '';
+            const previousTrackSignature = JSON.stringify(previousTrack?.trackinfo || null);
+            const previewSignature = JSON.stringify(previewData.trackinfo || null);
+
+            if (previousTrackId && previousTrackId !== String(currentTrackId) && previousTrackSignature === previewSignature) {
+                return;
+            }
+
+            const existingPreview = this.parseStoredJson(localStorage.getItem('appYa_currentTrack'));
+            if (JSON.stringify(existingPreview) !== JSON.stringify(previewData)) {
+                this.writeLocalStorageJson('appYa_currentTrack', previewData);
+            }
+        },
+
+        startPlayerStateMonitor() {
+            if (window.__appYaPlayerStateMonitorId) {
+                return;
+            }
+
+            const syncPlayerState = () => {
+                try {
+                    this.syncCurrentTrackPreview();
+                } catch (error) {}
+            };
+
+            syncPlayerState();
+            window.__appYaPlayerStateMonitorId = window.setInterval(syncPlayerState, 350);
         },
 
         processPlayButtons: function (playButtonsContent) {
@@ -497,20 +597,56 @@ if (typeof APP_CONFIG === 'undefined') {
 
             const originalFetch = window.fetch;
 
+            const normalizeTrackId = (trackId) => trackId ? String(trackId).trim() : '';
+
             const updateCurrentTrackId = (nextTrackId) => {
-                const normalizedTrackId = nextTrackId ? String(nextTrackId).trim() : '';
+                const normalizedTrackId = normalizeTrackId(nextTrackId);
+                const previousTrackId = normalizeTrackId(localStorage.getItem('appYa_currentTrackId'));
 
                 if (!normalizedTrackId) {
                     return;
                 }
 
+                if (previousTrackId && previousTrackId !== normalizedTrackId) {
+                    const currentTrackPreview = this.parseStoredJson(localStorage.getItem('appYa_currentTrack'));
+                    const currentPreviewTrackId = normalizeTrackId(currentTrackPreview?.trackinfo?.id);
+
+                    if (currentPreviewTrackId && currentPreviewTrackId !== normalizedTrackId) {
+                        this.writeLocalStorageJson('appYa_previousTrack', currentTrackPreview);
+                    }
+
+                    this.removeLocalStorageKey('appYa_currentTrack');
+                }
+
                 if (localStorage.getItem('appYa_currentTrackId') !== normalizedTrackId) {
                     localStorage.setItem('appYa_currentTrackId', normalizedTrackId);
+                    this.notifyLocalStateChanged();
+                }
+
+                if (localStorage.getItem('appYa_nextTrackId') === normalizedTrackId) {
+                    this.removeLocalStorageKey('appYa_nextTrackId');
+                    this.removeLocalStorageKey('appYa_nextTrack');
+                }
+            };
+
+            const updateNextTrackId = (nextTrackId) => {
+                const normalizedTrackId = normalizeTrackId(nextTrackId);
+                const currentTrackId = normalizeTrackId(localStorage.getItem('appYa_currentTrackId'));
+
+                if (!normalizedTrackId || normalizedTrackId === currentTrackId) {
+                    this.removeLocalStorageKey('appYa_nextTrackId');
+                    this.removeLocalStorageKey('appYa_nextTrack');
+                    return;
+                }
+
+                if (localStorage.getItem('appYa_nextTrackId') !== normalizedTrackId) {
+                    localStorage.setItem('appYa_nextTrackId', normalizedTrackId);
+                    this.notifyLocalStateChanged();
                 }
             };
 
             // Вспомогательная функция для логики (чтобы не дублировать код)
-            this.handleBackgroundData = async (trackId, clonedResponse) => {
+            this.handleBackgroundData = async (trackId, clonedResponse, trackSlot) => {
                 try {
                     // Если есть ответ от сервера, вынимаем ID и JSON оттуда
                     if (clonedResponse) {
@@ -520,8 +656,11 @@ if (typeof APP_CONFIG === 'undefined') {
                             || parsedUrl.searchParams.get('trackIds')?.split(',').map((item) => item.trim()).find(Boolean);
 
                         if (finalTrackId) {
-                            updateCurrentTrackId(finalTrackId);
-                            appYa.notifyExtension('RESOLVE_TRACK_INFO', {trackId: finalTrackId});
+                            if (trackSlot === 'next') {
+                                updateNextTrackId(finalTrackId);
+                            } else {
+                                updateCurrentTrackId(finalTrackId);
+                            }
                         }
 
                         const contentType = clonedResponse.headers.get("content-type");
@@ -533,8 +672,11 @@ if (typeof APP_CONFIG === 'undefined') {
                             }
                         }
                     } else if (trackId) {
-                        updateCurrentTrackId(trackId);
-                        appYa.notifyExtension('RESOLVE_TRACK_INFO', {trackId});
+                        if (trackSlot === 'next') {
+                            updateNextTrackId(trackId);
+                        } else {
+                            updateCurrentTrackId(trackId);
+                        }
                     }
                 } catch (e) {}
             };
@@ -546,15 +688,14 @@ if (typeof APP_CONFIG === 'undefined') {
                 const isPlayRequest = requestUrl.includes('/plays');
                 const isFileInfoRequest = requestUrl.includes('/get-file-info?') || requestUrl.includes('/get-file-info/batch');
                 const shouldTrack = isApiRequest && (isPlayRequest || isFileInfoRequest);
+                const trackSlot = isFileInfoRequest ? 'next' : 'current';
 
                 if (shouldTrack && isPlayRequest) {
                     if (url instanceof Request) {
-                        url.clone().text().then(t => {
-                            try {
-                                const id = JSON.parse(t).plays?.[0]?.trackId;
-                                if (id) this.handleBackgroundData(id, null);
-                            } catch(e) {}
-                        });
+                        try {
+                            const requestText = await url.clone().text();
+                            trackIdFromBody = JSON.parse(requestText).plays?.[0]?.trackId || null;
+                        } catch(e) {}
                     } else if (typeof options?.body === 'string') {
                         try {
                             trackIdFromBody = JSON.parse(options.body).plays?.[0]?.trackId;
@@ -575,7 +716,7 @@ if (typeof APP_CONFIG === 'undefined') {
 
                 if (shouldTrack) {
                     setTimeout(() => {
-                        this.handleBackgroundData(trackIdFromBody, responseClone);
+                        this.handleBackgroundData(trackIdFromBody, responseClone, trackSlot);
                     }, 0);
                 }
 

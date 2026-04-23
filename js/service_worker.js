@@ -121,6 +121,44 @@ function extractTrackIdFromPlaysPayload(payload) {
     return null;
 }
 
+function mergeDatabaseState(existingDb = {}, incomingData = {}) {
+    const mergedDb = {
+        ...incomingData
+    };
+
+    const keysToPreserve = [
+        'appYa_currentTrack',
+        'appYa_cureitTrack',
+        'appYa_currentTrackId',
+        'appYa_previousTrack',
+        'appYa_nextTrack',
+        'appYa_nextTrackId'
+    ];
+
+    keysToPreserve.forEach((key) => {
+        if (!mergedDb[key] && existingDb[key]) {
+            mergedDb[key] = existingDb[key];
+        }
+    });
+
+    if (!mergedDb.appYa_currentTrack && mergedDb.appYa_cureitTrack) {
+        mergedDb.appYa_currentTrack = mergedDb.appYa_cureitTrack;
+    }
+
+    if (!mergedDb.appYa_cureitTrack && mergedDb.appYa_currentTrack) {
+        mergedDb.appYa_cureitTrack = mergedDb.appYa_currentTrack;
+    }
+
+    const currentTrackId = pickFirstTrackId(mergedDb.appYa_currentTrackId);
+    const nextTrackId = pickFirstTrackId(mergedDb.appYa_nextTrackId);
+    if (currentTrackId && nextTrackId && currentTrackId === nextTrackId) {
+        mergedDb.appYa_nextTrackId = '';
+        mergedDb.appYa_nextTrack = '';
+    }
+
+    return mergedDb;
+}
+
 const appService = {
     /**
      * Сохраняет значение в `chrome.storage.local`.
@@ -191,6 +229,140 @@ const badgeManager = {
  * Инкапсулирует загрузку треков, упаковку ID3-метаданных и сохранение файлов.
  */
 const downloadManager = {
+    queueState: {
+        totalCount: 0,
+        queuedCount: 0,
+        stopRequested: false,
+        activeDownloadIds: new Set(),
+        badgeColor: null
+    },
+
+    createQueueState() {
+        return {
+            totalCount: 0,
+            queuedCount: 0,
+            stopRequested: false,
+            activeDownloadIds: new Set(),
+            badgeColor: null
+        };
+    },
+
+    getQueueSnapshot() {
+        const activeDownloadCount = this.queueState.activeDownloadIds.size;
+        const remainingCount = this.queueState.queuedCount + activeDownloadCount;
+
+        return {
+            isActive: remainingCount > 0,
+            stopRequested: this.queueState.stopRequested,
+            totalCount: this.queueState.totalCount,
+            remainingCount,
+            activeDownloadCount,
+            completedCount: Math.max(this.queueState.totalCount - remainingCount, 0)
+        };
+    },
+
+    async persistQueueState() {
+        const snapshot = this.getQueueSnapshot();
+        const badgeColor = this.queueState.badgeColor || badgeManager.getRandomColor();
+
+        badgeManager.updateBadge(snapshot.remainingCount, badgeColor);
+        await chrome.storage.local.set({
+            [APP_CONFIG.storageKeys.downloadState]: snapshot
+        });
+
+        if (!snapshot.isActive) {
+            this.queueState = this.createQueueState();
+            badgeManager.updateBadge(0, badgeColor);
+        }
+
+        return snapshot;
+    },
+
+    async startQueue(trackCount) {
+        const previousSnapshot = this.getQueueSnapshot();
+        if (!previousSnapshot.isActive) {
+            this.queueState = this.createQueueState();
+            this.queueState.badgeColor = badgeManager.getRandomColor();
+        }
+
+        this.queueState.totalCount += trackCount;
+        this.queueState.queuedCount += trackCount;
+        this.queueState.stopRequested = false;
+        return this.persistQueueState();
+    },
+
+    async completeQueuedTrack() {
+        if (this.queueState.queuedCount > 0) {
+            this.queueState.queuedCount -= 1;
+        }
+
+        return this.persistQueueState();
+    },
+
+    async discardQueuedTracks(count) {
+        if (count <= 0) {
+            return this.getQueueSnapshot();
+        }
+
+        this.queueState.queuedCount = Math.max(0, this.queueState.queuedCount - count);
+        return this.persistQueueState();
+    },
+
+    async handoffQueuedTrackToBrowser(downloadId) {
+        if (this.queueState.queuedCount > 0) {
+            this.queueState.queuedCount -= 1;
+        }
+
+        if (typeof downloadId === 'number') {
+            this.queueState.activeDownloadIds.add(downloadId);
+        }
+
+        return this.persistQueueState();
+    },
+
+    async finalizeBrowserDownload(downloadId) {
+        if (typeof downloadId === 'number') {
+            this.queueState.activeDownloadIds.delete(downloadId);
+        }
+
+        return this.persistQueueState();
+    },
+
+    shouldStopQueue() {
+        return Boolean(this.queueState.stopRequested);
+    },
+
+    revokeDownloadUrlIfNeeded(inputData) {
+        if (typeof inputData?.download === 'string' && inputData.download.startsWith('blob:')) {
+            URL.revokeObjectURL(inputData.download);
+        }
+    },
+
+    async requestStop() {
+        const snapshot = this.getQueueSnapshot();
+        if (!snapshot.isActive) {
+            return snapshot;
+        }
+
+        this.queueState.stopRequested = true;
+        await this.persistQueueState();
+
+        const activeDownloadIds = [...this.queueState.activeDownloadIds];
+        await Promise.all(activeDownloadIds.map((downloadId) => new Promise((resolve) => {
+            chrome.downloads.cancel(downloadId, () => {
+                if (chrome.runtime.lastError) {
+                    logger.warn('chrome.downloads.cancel failed', {
+                        downloadId,
+                        message: chrome.runtime.lastError.message
+                    });
+                }
+                resolve();
+            });
+        })));
+
+        return this.getQueueSnapshot();
+    },
+
     /**
      * Повторяет сетевой запрос несколько раз, если он завершился ошибкой.
      * @param {string} url URL запроса.
@@ -424,30 +596,129 @@ const downloadManager = {
     },
 
     /**
-     * Обновляет данные о текущем треке в storage, чтобы popup мог их показать.
+     * Формирует обновление storage для текущего или следующего трека.
+     * @param {object} appYaDb Текущая база extension storage.
      * @param {number|string} trackId Идентификатор трека.
+     * @param {object} trackInfo Метаданные трека.
+     * @param {'current'|'next'} slot Целевой слот в popup.
+     * @returns {object} Новый объект базы для сохранения.
+     */
+    buildResolvedTrackState(appYaDb, trackId, trackInfo, slot = 'current') {
+        const normalizedTrackId = String(trackId);
+        const currentTrackId = pickFirstTrackId(appYaDb.appYa_currentTrackId);
+        const nextTrackId = pickFirstTrackId(appYaDb.appYa_nextTrackId);
+        const trackPayload = JSON.stringify({trackinfo: trackInfo});
+        const nextState = {
+            ...appYaDb
+        };
+
+        if (slot === 'next') {
+            if (normalizedTrackId === currentTrackId) {
+                nextState.appYa_nextTrackId = '';
+                nextState.appYa_nextTrack = '';
+                return nextState;
+            }
+
+            nextState.appYa_nextTrackId = normalizedTrackId;
+            nextState.appYa_nextTrack = trackPayload;
+            return nextState;
+        }
+
+        nextState.appYa_currentTrackId = normalizedTrackId;
+        nextState.appYa_currentTrack = trackPayload;
+        nextState.appYa_cureitTrack = trackPayload;
+
+        if (normalizedTrackId === nextTrackId) {
+            nextState.appYa_nextTrackId = '';
+            nextState.appYa_nextTrack = '';
+        }
+
+        return nextState;
+    },
+
+    /**
+     * Сохраняет ожидаемый идентификатор трека в нужный слот до получения метаданных.
+     * Это позволяет popup сразу понять, что текущий трек сменился, даже если запрос
+     * к API ещё не завершился.
+     * @param {object} appYaDb Текущее состояние базы.
+     * @param {number|string} trackId Идентификатор трека.
+     * @param {'current'|'next'} slot Целевой слот.
+     * @returns {object} Новый объект базы для сохранения.
+     */
+    buildPendingTrackState(appYaDb, trackId, slot = 'current') {
+        const normalizedTrackId = String(trackId);
+        const nextState = {
+            ...appYaDb
+        };
+
+        if (slot === 'next') {
+            const currentTrackId = pickFirstTrackId(appYaDb.appYa_currentTrackId);
+            if (normalizedTrackId === currentTrackId) {
+                nextState.appYa_nextTrackId = '';
+                nextState.appYa_nextTrack = '';
+                return nextState;
+            }
+
+            nextState.appYa_nextTrackId = normalizedTrackId;
+            return nextState;
+        }
+
+        nextState.appYa_currentTrackId = normalizedTrackId;
+
+        if (normalizedTrackId === pickFirstTrackId(appYaDb.appYa_nextTrackId)) {
+            nextState.appYa_nextTrackId = '';
+            nextState.appYa_nextTrack = '';
+        }
+
+        return nextState;
+    },
+
+    /**
+     * Обновляет данные о текущем или следующем треке в storage, чтобы popup мог их показать.
+     * @param {number|string} trackId Идентификатор трека.
+     * @param {'current'|'next'} slot Целевой слот.
      * @returns {Promise<void>}
      */
-    async resolveCurrentTrack(trackId) {
+    async resolveTrackInfo(trackId, slot = 'current') {
         try {
-            const trackInfo = await this.fetchTrackMetadata(trackId);
             const dbResult = await chrome.storage.local.get(APP_CONFIG.storageKeys.database);
             const appYaDb = dbResult[APP_CONFIG.storageKeys.database] || {};
+            const pendingDbState = this.buildPendingTrackState(appYaDb, trackId, slot);
 
             await chrome.storage.local.set({
-                [APP_CONFIG.storageKeys.database]: {
-                    ...appYaDb,
-                    appYa_currentTrackId: String(trackId),
-                    appYa_cureitTrack: JSON.stringify({trackinfo: trackInfo})
-                }
+                [APP_CONFIG.storageKeys.database]: pendingDbState
             });
 
-            logger.log('current track info resolved in worker', {
+            const trackInfo = await this.fetchTrackMetadata(trackId);
+            const latestDbResult = await chrome.storage.local.get(APP_CONFIG.storageKeys.database);
+            const latestDb = latestDbResult[APP_CONFIG.storageKeys.database] || {};
+            const expectedTrackId = slot === 'next'
+                ? pickFirstTrackId(latestDb.appYa_nextTrackId)
+                : pickFirstTrackId(latestDb.appYa_currentTrackId);
+            const normalizedTrackId = String(trackId);
+
+            if (expectedTrackId !== normalizedTrackId) {
+                logger.warn('track info resolution discarded because slot moved on', {
+                    slot,
+                    resolvedTrackId: normalizedTrackId,
+                    expectedTrackId
+                });
+                return;
+            }
+
+            const nextDbState = this.buildResolvedTrackState(latestDb, trackId, trackInfo, slot);
+
+            await chrome.storage.local.set({
+                [APP_CONFIG.storageKeys.database]: nextDbState
+            });
+
+            logger.log('track info resolved in worker', {
+                slot,
                 trackId,
                 title: trackInfo?.title
             });
         } catch (error) {
-            logger.error('resolveCurrentTrack failed', {trackId, error});
+            logger.error('resolveTrackInfo failed', {trackId, slot, error});
         }
     },
 
@@ -475,12 +746,18 @@ const downloadManager = {
     /**
      * Запускает пакетное скачивание списка треков с учётом настроек пользователя.
      * @param {{tabId:number, playlistName:string, trackIds:number[]}} message Полезная нагрузка runtime-сообщения.
-     * @param {number} globalCount Текущее количество активных загрузок.
      * @returns {Promise<void>}
      */
-    async downloadTracks(message, globalCount) {
+    async downloadTracks(message) {
         let {tabId, playlistName, trackIds} = message;
         logger.log('downloadTracks called', {tabId, playlistName, trackIds});
+
+        if (!Array.isArray(trackIds) || trackIds.length === 0) {
+            logger.warn('downloadTracks skipped because trackIds are empty');
+            return;
+        }
+
+        await this.startQueue(trackIds.length);
 
         const settingsResult = await chrome.storage.local.get(APP_CONFIG.storageKeys.settings);
         const appSettings = normalizeSettings(settingsResult[APP_CONFIG.storageKeys.settings]);
@@ -492,11 +769,7 @@ const downloadManager = {
         // Проверяем, содержит ли downloadFolder переменные
         const hasVariables = /%[^%]+%/.test(downloadFolder);
 
-
         let batchSize = appSettings.downlodadCount ?? APP_CONFIG.defaults.downlodadCount;
-        globalCount += trackIds.length;
-        let bg = badgeManager.getRandomColor();
-        badgeManager.updateBadge(globalCount, bg);
         logger.log('download batch prepared', {
             batchSize,
             totalTracks: trackIds.length,
@@ -508,10 +781,21 @@ const downloadManager = {
 
             await Promise.all(batch.map(trackId =>
                 (async () => {
+                    if (this.shouldStopQueue()) {
+                        await this.completeQueuedTrack();
+                        logger.warn('track download skipped because stop was requested', {trackId});
+                        return;
+                    }
+
                     try {
                         const inputData = await this.fetchTrackPackage(trackId, appSettings);
-                        globalCount -= 1;
-                        badgeManager.updateBadge(globalCount, bg);
+
+                        if (this.shouldStopQueue()) {
+                            this.revokeDownloadUrlIfNeeded(inputData);
+                            await this.completeQueuedTrack();
+                            logger.warn('prepared track discarded because stop was requested', {trackId});
+                            return;
+                        }
 
                         if (inputData !== null && inputData.download) {
                             logger.log('track data received in worker', {
@@ -553,17 +837,23 @@ const downloadManager = {
                                 logger.log('download folder processed', {trackId, processedFolder});
                             }
 
-                            downloadManager.downloadFile(inputData, effectivePlaylistName, settings);
+                            await this.downloadFile(inputData, effectivePlaylistName, settings);
                         } else {
+                            await this.completeQueuedTrack();
                             logger.warn('track data is empty or missing download url', {trackId});
                         }
                     } catch (error) {
-                        globalCount -= 1;
-                        badgeManager.updateBadge(globalCount, bg);
+                        await this.completeQueuedTrack();
                         logger.error('worker track package failed', {trackId, error});
                     }
                 })()
             ));
+
+            if (this.shouldStopQueue()) {
+                const remainingTrackCount = Math.max(0, trackIds.length - (i + batch.length));
+                await this.discardQueuedTracks(remainingTrackCount);
+                break;
+            }
         }
     },
 
@@ -572,12 +862,12 @@ const downloadManager = {
      * @param {{download: string, trackinfo: object}} inputData Данные для сохранения файла.
      * @param {string} playlistName Папка назначения.
      * @param {{app_setting: object}} settings Объект настроек для скачивания.
-     * @returns {void}
+     * @returns {Promise<boolean>} `true`, если задача была передана браузеру.
      */
     downloadFile(inputData, playlistName, settings) {
         const escapeFileName = (fileName) => fileName.replace(/[\\/:*?"<>|]/g, '_');
-        let artists = inputData.trackinfo.artists.map((item) => item.name).join(', ');
-        let title = inputData.trackinfo.title;
+        const artists = inputData.trackinfo.artists.map((item) => item.name).join(', ');
+        const title = inputData.trackinfo.title;
 
         let trackPrefix = '';
         if (settings?.app_setting?.numberingTracks === true) {
@@ -586,40 +876,63 @@ const downloadManager = {
                 ? trackIdx.toString().padStart(2, '0') + '. '
                 : '';
         }
-        let fileName = `${playlistName}/${trackPrefix}${escapeFileName(artists)} - ${escapeFileName(title)}.mp3`;
+        const fileName = `${playlistName}/${trackPrefix}${escapeFileName(artists)} - ${escapeFileName(title)}.mp3`;
 
         logger.log('downloadFile prepared', {fileName});
 
-        chrome.downloads.download({
-            url: inputData.download,
-            filename: fileName,
-            saveAs: false,
-            conflictAction: 'overwrite'
-        }, (downloadId) => {
-            if (chrome.runtime.lastError) {
-                logger.error('chrome.downloads.download failed', chrome.runtime.lastError.message);
-                return;
-            }
-            logger.log('download started', {downloadId, fileName});
+        return new Promise((resolve) => {
+            chrome.downloads.download({
+                url: inputData.download,
+                filename: fileName,
+                saveAs: false,
+                conflictAction: 'overwrite'
+            }, async (downloadId) => {
+                if (chrome.runtime.lastError || typeof downloadId !== 'number') {
+                    logger.error('chrome.downloads.download failed', chrome.runtime.lastError?.message || 'unknown error');
+                    this.revokeDownloadUrlIfNeeded(inputData);
+                    await this.completeQueuedTrack();
+                    resolve(false);
+                    return;
+                }
 
+                logger.log('download started', {downloadId, fileName});
 
-            // Отслеживаем завершение загрузки
-            if (settings?.app_setting.savehistory === "0" || settings?.app_setting.savehistory === 0) {
-                chrome.downloads.onChanged.addListener(function listener(delta) {
-                    if (delta.id === downloadId && delta.state && delta.state.current === 'complete') {
-                        // Удаляем запись из истории загрузок
+                const removeFromHistory = settings?.app_setting.savehistory === '0'
+                    || settings?.app_setting.savehistory === 0;
+
+                const finalizeDownload = async (finalState) => {
+                    if (removeFromHistory && finalState === 'complete') {
                         chrome.downloads.erase({id: downloadId}, () => {
                             if (chrome.runtime.lastError) {
-                                //console.warn("Не удалось удалить запись о загрузке:", chrome.runtime.lastError.message);
+                                logger.warn('download erase failed', chrome.runtime.lastError.message);
                             } else {
                                 logger.log('download removed from history', {downloadId});
                             }
                         });
-                        // Отписываемся от слушателя, чтобы не ловить другие загрузки
-                        chrome.downloads.onChanged.removeListener(listener);
                     }
-                });
-            }
+
+                    this.revokeDownloadUrlIfNeeded(inputData);
+                    await this.finalizeBrowserDownload(downloadId);
+                };
+
+                const listener = (delta) => {
+                    if (delta.id !== downloadId || !delta.state) {
+                        return;
+                    }
+
+                    const currentState = delta.state.current;
+                    if (currentState === 'in_progress') {
+                        return;
+                    }
+
+                    chrome.downloads.onChanged.removeListener(listener);
+                    void finalizeDownload(currentState);
+                };
+
+                chrome.downloads.onChanged.addListener(listener);
+                await this.handoffQueuedTrackToBrowser(downloadId);
+                resolve(true);
+            });
         });
     }
 };
@@ -629,8 +942,6 @@ const downloadManager = {
  * Runtime-обработчик сообщений от content script и popup.
  */
 const worker = {
-    globalCount: 0,
-
     /**
      * Маршрутизирует runtime-сообщения по действиям расширения.
      * @param {object} message Входящее сообщение.
@@ -681,17 +992,7 @@ const worker = {
             }
             appService.getFromStorage(APP_CONFIG.storageKeys.database).then((result) => {
                 const existingDb = result[APP_CONFIG.storageKeys.database] || {};
-                const mergedDb = {
-                    ...message.data
-                };
-
-                if (!mergedDb.appYa_cureitTrack && existingDb.appYa_cureitTrack) {
-                    mergedDb.appYa_cureitTrack = existingDb.appYa_cureitTrack;
-                }
-
-                if (!mergedDb.appYa_currentTrackId && existingDb.appYa_currentTrackId) {
-                    mergedDb.appYa_currentTrackId = existingDb.appYa_currentTrackId;
-                }
+                const mergedDb = mergeDatabaseState(existingDb, message.data || {});
 
                 return appService.saveToStorage(APP_CONFIG.storageKeys.database, mergedDb);
             }).then(() => {
@@ -703,7 +1004,7 @@ const worker = {
         if (message.action === "download_Tracks") {
             logger.log('download_Tracks message received', message);
             sendResponse({download_Tracks: message});
-            downloadManager.downloadTracks(message, this.globalCount).catch((error) => {
+            downloadManager.downloadTracks(message).catch((error) => {
                 logger.error('downloadTracks top-level failed', error);
             });
             return;
@@ -711,18 +1012,30 @@ const worker = {
 
         if (message.action === "resolve_track_info") {
             logger.log('resolve_track_info message received', message);
-            sendResponse({resolve_track_info: message.trackId});
-            downloadManager.resolveCurrentTrack(message.trackId).catch((error) => {
-                logger.error('resolveCurrentTrack top-level failed', error);
+            sendResponse({
+                resolve_track_info: message.trackId,
+                slot: message.slot || 'current'
+            });
+            downloadManager.resolveTrackInfo(message.trackId, message.slot || 'current').catch((error) => {
+                logger.error('resolveTrackInfo top-level failed', error);
             });
             return;
         }
 
+        if (message.action === "stop_downloads") {
+            logger.log('stop_downloads message received');
+            downloadManager.requestStop().then((snapshot) => {
+                sendResponse({success: true, state: snapshot});
+            }).catch((error) => {
+                logger.error('requestStop failed', error);
+                sendResponse({success: false, message: error?.message || String(error)});
+            });
+            return true;
+        }
+
         if (message.action === "download_SFIFTD") {
-            const fileInfoPayload = parseStoredJson(message.data?.["appYa_get-file-info"]);
             const playsPayload = parseStoredJson(message.data?.appYa_plays);
             const resolvedTrackId = pickFirstTrackId(message.data?.appYa_currentTrackId)
-                || extractTrackIdFromFileInfoPayload(fileInfoPayload)
                 || extractTrackIdFromPlaysPayload(playsPayload);
 
             if (resolvedTrackId) {
@@ -734,7 +1047,7 @@ const worker = {
 
                 logger.log('download_SFIFTD message resolved', downData);
 
-                downloadManager.downloadTracks(downData, this.globalCount);
+                downloadManager.downloadTracks(downData);
             } else {
                 logger.warn('download_SFIFTD skipped because track id was not resolved');
             }
